@@ -17,18 +17,40 @@ try:
     settings.set(settings.USE_WORLD_COORDS, True)
     ifc_model = ifcopenshell.open(ifc_file_path)
     vertices_list = []
+    element_subtypes = set()
+    product_subtypes = set()
     for element in ifc_model.by_type('IfcProduct'):
-        if element.Representation:
+        product_subtypes.add(element.is_a())
+        if element.is_a('IfcElement') and element.Representation:
             shape = ifcopenshell.geom.create_shape(settings, element)
             geometry = shape.geometry
             
             # Extract vertices and convert to world coordinates
             vertices = np.array(geometry.verts).reshape(-1, 3)
-            print(f"Element {element.GlobalId}:")
-            print(vertices)
             vertices_list.append(vertices)
+
+            # Collect the subtype of IfcElement
+            element_subtypes.add(element.is_a())
+
+    # Sort the vertices_list by length in descending order
+    sorted_vertices_list = sorted(vertices_list, key=len, reverse=True)
+
+    # Find the second longest list
+    if len(sorted_vertices_list) > 1:
+        for i in range(len(sorted_vertices_list)):
+            print("list ", i," has length:", len(sorted_vertices_list[i]))
+    else:
+        print("There is only a sinle element in the list")
+    vertices_list = sorted_vertices_list[:]
+    print("Number of vertices: ",len(vertices_list))
+    for i in range(len(vertices_list)):
+        print("list ", i," has length:", len(vertices_list[i]))
     print("Ifcproduct: ",len(ifc_model.by_type('IfcProduct')))
+    print("IfcElement: ", len([e for e in ifc_model.by_type('IfcProduct') if e.is_a('IfcElement')]))
+    print("IfcSpatialElement: ", len([t for t in ifc_model.by_type('IfcProduct') if t.is_a('IfcSpatialElement')]))
     print("IfcPolyline: ",len(ifc_model.by_type('IfcPolyline')))
+    print("Subtypes of IfcElement: ", element_subtypes)
+    print("Subtypes of IfcProduct: ", product_subtypes)
     #breakpoint()
     #settings.set(settings.USE_PYTHON_OPENCASCADE, True)
     print("✅ IFC file loaded successfully.")
@@ -57,7 +79,7 @@ def compute_normal(p1, p2, p3):
     normal = np.cross(v1, v2)
     norm_length = np.linalg.norm(normal)
     return (normal / norm_length).tolist() if norm_length != 0 else [0, 0, 1]
-
+"""
 # --------------------------
 # Extract Junctions and Lines
 def extract_junctions_and_lines(): # CHANGES WERE MADE HERE TO CREATE MAKE UNIQUE LINES
@@ -73,17 +95,14 @@ def extract_junctions_and_lines(): # CHANGES WERE MADE HERE TO CREATE MAKE UNIQU
     shape_builder = ifcopenshell.util.shape_builder.ShapeBuilder(ifc_model)
     #print("polylines: ",ifc_model.by_type("IfcPolyline"))
     for polyline in vertices_list:
-        """ 
         print(f"Processing polyline of type: {type(polyline)}")
         t = list(shape_builder.get_polyline_coords(polyline))
         print("t: ",t)
-        """
         points = [tuple(pt) for pt in polyline]
         idxpoly += 1
         if len(points) >= 2:
             for i in range(len(points) - 1):
                 start, end = points[i], points[i + 1]
-                print("poly: ",idxpoly," start coordinate: ",start)
                 # Ensure 3D coordinates (fill missing dimensions with 0.0)
                 start = tuple(float(coord) for coord in (start + (0.0,) * (3 - len(start))))
                 end = tuple(float(coord) for coord in (end + (0.0,) * (3 - len(end))))
@@ -118,7 +137,141 @@ def extract_junctions_and_lines(): # CHANGES WERE MADE HERE TO CREATE MAKE UNIQU
                     })
 
     print(f"✅ Extracted {len(junctions)} junctions and {len(lines)} lines.")
+"""
+def get_global_coordinates(local_point, parent_element):
+    """
+    Compute the global coordinates of a point by applying the transformations
+    defined in the parent element's IfcLocalPlacement.
+    """
+    # Ensure the local_point has 3 elements (pad with 0.0 if necessary)
+    local_point = tuple(local_point) + (0.0,) * (3 - len(local_point))
 
+    local_placement = parent_element.ObjectPlacement
+    transformation_matrix = np.identity(4)  # Start with an identity matrix
+
+    # Traverse the placement hierarchy to compute the transformation matrix
+    while local_placement:
+        if local_placement.is_a("IfcLocalPlacement"):
+            relative_placement = local_placement.RelativePlacement
+            if relative_placement.is_a("IfcAxis2Placement3D"):
+                transformation_matrix = apply_transformation(transformation_matrix, relative_placement)
+            local_placement = local_placement.PlacementRelTo
+        else:
+            break
+
+    # Convert the local point to a 4D point (homogeneous coordinates)
+    local_point_4d = np.array([local_point[0], local_point[1], local_point[2], 1.0])
+
+    # Apply the transformation matrix to the local point
+    global_point_4d = np.dot(transformation_matrix, local_point_4d)
+
+    # Convert the 4D point back to 3D
+    global_point = global_point_4d[:3] / global_point_4d[3]
+
+    return tuple(global_point)
+
+def apply_transformation(matrix, placement):
+    """
+    Apply the transformation defined by an IfcAxis2Placement3D to the given matrix.
+    """
+    origin = np.array(placement.Location.Coordinates)
+    axis = np.array(placement.Axis.DirectionRatios) if placement.Axis else np.array([0, 0, 1])
+    ref_direction = np.array(placement.RefDirection.DirectionRatios) if placement.RefDirection else np.array([1, 0, 0])
+
+    # Compute the rotation matrix
+    z_axis = axis / np.linalg.norm(axis)
+    x_axis = ref_direction / np.linalg.norm(ref_direction)
+    y_axis = np.cross(z_axis, x_axis)
+    y_axis /= np.linalg.norm(y_axis)
+    x_axis = np.cross(y_axis, z_axis)
+
+    rotation_matrix = np.identity(4)
+    rotation_matrix[:3, :3] = np.array([x_axis, y_axis, z_axis]).T
+
+    # Compute the translation matrix
+    translation_matrix = np.identity(4)
+    translation_matrix[:3, 3] = origin
+
+    # Combine the translation and rotation matrices
+    transformation_matrix = np.dot(translation_matrix, rotation_matrix)
+
+    # Apply the transformation to the existing matrix
+    return np.dot(matrix, transformation_matrix)
+
+def extract_junctions_and_lines():
+    print("\n🔍 Extracting junctions and lines...")
+    polylines = ifc_model.by_type("IfcPolyline")
+    print(f"✅ Found {len(polylines)} IfcPolyline entities.")
+    if "IfcPolyline" not in entity_types:
+        print("⚠ Warning: No IfcPolyline found in IFC model!")
+        return
+
+    # Use IfcProduct to extract polylines
+    for product in ifc_model.by_type("IfcProduct"):
+        if not product.Representation:
+            continue
+        #print("amount of representations: ",len(product.Representation.Representations))
+        # Iterate through the representations of the product
+        for representation in product.Representation.Representations:
+            for polyline in representation.Items:
+                if polyline.is_a("IfcMappedItem"):
+                    mapped_rep = polyline.MappingSource.MappedRepresentation
+                    print("Found IfcMappedItem with", len(mapped_rep.Items), "items.")
+
+                    for mapped_item in mapped_rep.Items:
+                        if mapped_item.is_a("IfcPolyline"):
+                            # Convert to global coordinates
+                            transformed_points = [
+                                ifcopenshell.util.placement.get_transformed_point(polyline, p)
+                                for p in mapped_item.Points
+                            ]
+                            points.extend(transformed_points)
+                if not polyline.is_a("IfcPolyline"):
+                    continue
+
+                # Extract points in global coordinates
+                points = []
+                print(f"Processing polyline of type: {type(polyline)}")
+                print("polyline: ",polyline)
+                for pt in polyline.Points:
+                    local_coords = tuple(pt.Coordinates)
+                    global_coords = get_global_coordinates(local_coords, product)
+                    print("global coords: ",global_coords)
+                    points.append(global_coords)
+
+                if len(points) >= 2:
+                    for i in range(len(points) - 1):
+                        start, end = points[i], points[i + 1]
+
+                        # Ensure 3D coordinates (fill missing dimensions with 0.0)
+                        start = tuple(float(coord) for coord in (start + (0.0,) * (3 - len(start))))
+                        end = tuple(float(coord) for coord in (end + (0.0,) * (3 - len(end))))
+
+                        # Compute direction vector
+                        direction = np.array(end) - np.array(start)
+
+                        # Validate the line has a valid direction (not zero vector)
+                        if np.linalg.norm(direction) < 1e-6:
+                            print(f"⚠ Skipping degenerate line (ID {len(lines)}) - start and end points are the same.")
+                            continue
+
+                        # Ensure each junction is stored uniquely
+                        if start not in junctions_dict:
+                            junctions_dict[start] = len(junctions)
+                            junctions.append({"ID": len(junctions), "coordinate": list(start)})
+
+                        if end not in junctions_dict:
+                            junctions_dict[end] = len(junctions)
+                            junctions.append({"ID": len(junctions), "coordinate": list(end)})
+
+                        # Append to lines array with correct shape
+                        lines.append({
+                            "ID": len(lines),
+                            "point": list(start),
+                            "direction": list(direction)  # Convert to Python list
+                        })
+
+    print(f"✅ Extracted {len(junctions)} junctions and {len(lines)} lines.")
 
 # --------------------------
 # Extract Planes from Walls and Slabs
@@ -300,7 +453,7 @@ def generate_matrices():
             #   continue
             if np.isclose(np.dot(normal, point) - offset, 0, atol=1e-3): # This might also include more or less lines than in actuality
                 planeLineMatrix[p_idx, l_idx] = 1
-
+            
     for l_idx, line in enumerate(lines):
         point = np.array(line["point"])
         end_point = point + np.array(line["direction"])
@@ -311,6 +464,8 @@ def generate_matrices():
         min_distance_to_point = float('inf')
         min_distance_to_end_point = float('inf')
 
+        #print("step 2 done")
+        #print(len(junctions))
         for j_idx, junction in enumerate(junctions):
             junction_coord = np.array(junction["coordinate"])
 
@@ -327,6 +482,7 @@ def generate_matrices():
             if distance_to_end_point < min_distance_to_end_point:
                 min_distance_to_end_point = distance_to_end_point
                 closest_junction_to_end_point = j_idx
+
 
         # Set the matrix entries for the closest junctions
         if closest_junction_to_point is not None:
