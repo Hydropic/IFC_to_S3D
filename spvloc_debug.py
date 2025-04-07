@@ -7,7 +7,7 @@ import json
 import numpy as np
 
 # File paths
-ifc_file_path = "/raid/USERDATA/ovrobi4y/SPVLOC/spvloc/2025-03-10_Stand_AA/IC6_s3d_2x3.ifc"
+ifc_file_path = "/raid/USERDATA/ovrobi4y/SPVLOC/spvloc/2025-03-10_Stand_AA/IC6_s3d_IFC2x3.ifc"
 output_json_path = "/raid/USERDATA/ovrobi4y/SPVLOC/spvloc/2025-03-10_Stand_AA/annotation_3d.json"
 
 # Load IFC file
@@ -212,66 +212,265 @@ def extract_junctions_and_lines():
             continue
         #print("amount of representations: ",len(product.Representation.Representations))
         # Iterate through the representations of the product
+        seen = set()
+        not_include_seen = True
         for representation in product.Representation.Representations:
-            for polyline in representation.Items:
-                if polyline.is_a("IfcMappedItem"):
-                    mapped_rep = polyline.MappingSource.MappedRepresentation
-                    print("Found IfcMappedItem with", len(mapped_rep.Items), "items.")
+            shape = ifcopenshell.geom.create_shape(settings, product)
+            mesh = shape.geometry
+            print(mesh.edges)
+            print(mesh.verts)
+            print("STAAR WARS")
+            points = []
+            for item in representation.Items:
+                # 1️⃣ If Direct Polyline (Simple Case)
+                if item.is_a("IfcPolyline"):
+                    for point in item.Points:
+                        if point not in seen or not_include_seen:
+                            local_coords = tuple(point.Coordinates)
+                            global_coords = get_global_coordinates(local_coords, product)
+                            print("global coords: ", global_coords)
+                            points.append(global_coords)
+                            seen.add(point)
 
+                # 2️⃣ If Mapped Item (Reused Geometry)
+                elif item.is_a("IfcMappedItem"):
+                    processed_mapped_items = set()
+                    mapped_rep = item.MappingSource.MappedRepresentation
+                    if not mapped_rep or item in processed_mapped_items:
+                        continue
                     for mapped_item in mapped_rep.Items:
+                        if mapped_item in processed_mapped_items:
+                            continue
+                        processed_mapped_items.add(item)
                         if mapped_item.is_a("IfcPolyline"):
-                            # Convert to global coordinates
-                            transformed_points = [
-                                ifcopenshell.util.placement.get_transformed_point(polyline, p)
-                                for p in mapped_item.Points
-                            ]
-                            points.extend(transformed_points)
-                if not polyline.is_a("IfcPolyline"):
-                    continue
+                            for point in mapped_item.Points:
+                                if point not in seen or not_include_seen:
+                                    local_coords = tuple(point.Coordinates)
+                                    global_coords = get_global_coordinates(local_coords, product)
+                                    print("global coords: ", global_coords)
+                                    points.append(global_coords)
+                                    seen.add(point)
+                            save_junction_lines(points)
+                            points = []
+                        elif mapped_item.is_a("IfcShellBasedSurfaceModel"):
+                            for shell in mapped_item.SbsmBoundary:  # Get Open Shells
+                                for face in shell.CfsFaces:  # Get Faces
+                                    for bound in face.Bounds:  # Get Face Boundaries
+                                        if bound.is_a("IfcFaceBound"):
+                                            loop = bound.Bound
+                                            if loop.is_a("IfcPolyLoop"):  # Get Loops
+                                                for point in loop.Polygon:
+                                                    if point not in seen or not_include_seen:
+                                                        local_coords = tuple(point.Coordinates)
+                                                        global_coords = get_global_coordinates(local_coords, product)
+                                                        points.append(global_coords)
+                                                        seen.add(point)
+                            save_junction_lines(points)
+                            points = []
+
+                        # ✅ Extract edges from IfcFacetedBrep
+                        elif mapped_item.is_a("IfcFacetedBrep"):
+                            for face in mapped_item.Outer.CfsFaces:  # Get faces from IfcClosedShell
+                                for bound in face.Bounds:  # Get face boundaries
+                                    if bound.is_a("IfcFaceBound"):
+                                        loop = bound.Bound
+                                        if loop.is_a("IfcPolyLoop"):  # Get edge loops
+                                            for point in loop.Polygon:
+                                                if point not in seen or not_include_seen:
+                                                    local_coords = tuple(point.Coordinates)
+                                                    global_coords = get_global_coordinates(local_coords, product)
+                                                    points.append(global_coords)
+                                                    seen.add(point)
+
+
+                elif item.is_a("IfcShellBasedSurfaceModel"):
+                            for shell in item.SbsmBoundary:  # Get Open Shells
+                                for face in shell.CfsFaces:  # Get Faces
+                                    for bound in face.Bounds:  # Get Face Boundaries
+                                        if bound.is_a("IfcFaceBound"):
+                                            loop = bound.Bound
+                                            if loop.is_a("IfcPolyLoop"):  # Get Loops
+                                                for point in loop.Polygon:
+                                                    if point not in seen or not_include_seen:
+                                                        local_coords = tuple(point.Coordinates)
+                                                        global_coords = get_global_coordinates(local_coords, product)
+                                                        points.append(global_coords)
+                                                        seen.add(point)
+
+                elif item.is_a("IfcGeometricCurveSet"):
+                    print("dawdaw")
+                    print(item.Elements)
+                    for geom in item.Elements:
+                        print(geom)
+                        if geom.is_a("IfcCartesianPoint"):
+                            if geom not in seen or not_include_seen:
+                                local_coords = tuple(geom.Coordinates)
+                                global_coords = get_global_coordinates(local_coords, product)
+                                points.append(global_coords)
+                                seen.add(geom)
+                            save_junction_lines(points)
+                            points = []
+                        elif geom.is_a("IfcPolyline"):
+                            for point in geom.Points:
+                                if point not in seen or not_include_seen:
+                                    print("IVE PLAYED THESE GAMES BEFORE")
+                                    local_coords = tuple(point.Coordinates)
+                                    global_coords = get_global_coordinates(local_coords, product)
+                                    print("len(points)1: ", len(points))
+                                    points.append(global_coords)
+                                    print("len(points)2: ", len(points))
+                                    seen.add(point)
+                            save_junction_lines(points)
+                            points = []
+
+                elif item.is_a("IfcFacetedBrep"):
+                    for face in item.Outer.CfsFaces:  # Get faces from IfcClosedShell
+                        for bound in face.Bounds:  # Get face boundaries
+                            if bound.is_a("IfcFaceBound"):
+                                loop = bound.Bound
+                                if loop.is_a("IfcPolyLoop"):  # Get edge loops
+                                    for point in loop.Polygon:
+                                        if point not in seen or not_include_seen:
+                                            local_coords = tuple(point.Coordinates)
+                                            global_coords = get_global_coordinates(local_coords, product)
+                                            points.append(global_coords)
+                                            seen.add(point)
+
+                # 3️⃣ If Extruded Solid (Walls, Slabs)
+                elif item.is_a("IfcExtrudedAreaSolid"):
+                    profile = item.SweptArea
+                    if profile and profile.is_a("IfcArbitraryClosedProfileDef"):
+                        for curve in profile.OuterCurve:
+                            if curve.is_a("IfcPolyline"):
+                                for point in curve.Points:
+                                    if point not in seen or not_include_seen:
+                                        global_coords = get_global_coordinates(point, product)
+                                        print("global coords: ", global_coords)
+                                        points.append(global_coords)
+                                        seen.add(point)
+
+                # 4️⃣ If Face-Based Model (More Complex)
+                elif item.is_a("IfcFaceBasedSurfaceModel"):
+                    for face in item.Faces:
+                        for bound in face.Bounds:
+                            if bound.is_a("IfcPolyline"):
+                                for point in bound.Points:
+                                    if point not in seen or not_include_seen:
+                                        global_coords = get_global_coordinates(point, product)
+                                        print("global coords: ", global_coords)
+                                        points.add(global_coords)
+                                        seen.add(point)
+                """if not polyline.is_a("IfcPolyline"):
+                    continue"""
 
                 # Extract points in global coordinates
-                points = []
-                print(f"Processing polyline of type: {type(polyline)}")
+                """print(f"Processing polyline of type: {type(polyline)}")
                 print("polyline: ",polyline)
                 for pt in polyline.Points:
                     local_coords = tuple(pt.Coordinates)
                     global_coords = get_global_coordinates(local_coords, product)
                     print("global coords: ",global_coords)
-                    points.append(global_coords)
-
-                if len(points) >= 2:
-                    for i in range(len(points) - 1):
-                        start, end = points[i], points[i + 1]
-
-                        # Ensure 3D coordinates (fill missing dimensions with 0.0)
-                        start = tuple(float(coord) for coord in (start + (0.0,) * (3 - len(start))))
-                        end = tuple(float(coord) for coord in (end + (0.0,) * (3 - len(end))))
-
-                        # Compute direction vector
-                        direction = np.array(end) - np.array(start)
-
-                        # Validate the line has a valid direction (not zero vector)
-                        if np.linalg.norm(direction) < 1e-6:
-                            print(f"⚠ Skipping degenerate line (ID {len(lines)}) - start and end points are the same.")
-                            continue
-
-                        # Ensure each junction is stored uniquely
-                        if start not in junctions_dict:
-                            junctions_dict[start] = len(junctions)
-                            junctions.append({"ID": len(junctions), "coordinate": list(start)})
-
-                        if end not in junctions_dict:
-                            junctions_dict[end] = len(junctions)
-                            junctions.append({"ID": len(junctions), "coordinate": list(end)})
-
-                        # Append to lines array with correct shape
-                        lines.append({
-                            "ID": len(lines),
-                            "point": list(start),
-                            "direction": list(direction)  # Convert to Python list
-                        })
+                    points.append(global_coords)"""
+                save_junction_lines(points)
 
     print(f"✅ Extracted {len(junctions)} junctions and {len(lines)} lines.")
+
+def save_junction_lines(points):
+    if len(points) >= 2:
+        for i in range(len(points) - 1):
+            start, end = points[i], points[i + 1]
+
+            # Ensure 3D coordinates (fill missing dimensions with 0.0)
+            start = tuple(float(coord) for coord in (start + (0.0,) * (3 - len(start))))
+            end = tuple(float(coord) for coord in (end + (0.0,) * (3 - len(end))))
+
+            # Compute direction vector
+            direction = np.array(end) - np.array(start)
+
+            # Validate the line has a valid direction (not zero vector)
+            if np.linalg.norm(direction) < 1e-6:
+                print(f"⚠ Skipping degenerate line (ID {len(lines)}) - start and end points are the same.")
+                continue
+            
+
+            # Ensure each junction is stored uniquely
+            if start not in junctions_dict:
+                junctions_dict[start] = len(junctions)
+                junctions.append({"ID": len(junctions), "coordinate": list(start)})
+
+            if end not in junctions_dict:
+                junctions_dict[end] = len(junctions)
+                junctions.append({"ID": len(junctions), "coordinate": list(end)})
+
+
+            # Append to lines array with correct shape
+
+            new_point = list(start)
+            new_direction = list(direction)
+
+            # Check if a line with the same point and direction already exists
+            exists = any(line["point"] == new_point and line["direction"] == new_direction for line in lines)
+
+            if exists:
+                continue
+
+            lines.append({
+                "ID": len(lines),
+                "point": new_point,
+                "direction": new_direction
+            })
+
+def extract_junctions_and_lines_work():
+    for product in ifc_model.by_type("IfcProduct"):
+        #if not product.Representation:
+            #continue
+
+        try:
+            shape = ifcopenshell.geom.create_shape(settings, product)
+            mesh = shape.geometry
+            process_mesh(mesh.verts, mesh.edges)
+        except:
+            continue
+        
+    print(f"✅ Extracted {len(junctions)} junctions and {len(lines)} lines.")
+
+def process_mesh(verts, edges):
+
+
+        # Convert flat verts list to list of 3D points
+        points = [(verts[i], verts[i+1], verts[i+2]) for i in range(0, len(verts), 3)]
+        print(points)
+
+        # Iterate over edge pairs
+        for i in range(0, len(edges), 2):
+            start = points[edges[i]]
+            end = points[edges[i + 1]]
+
+            # Add start point to junctions if not already present
+            if start not in junctions_dict:
+                junctions_dict[start] = len(junctions)
+                junctions.append({
+                    "ID": len(junctions),
+                    "coordinate": list(start)
+                })
+
+            # Add end point to junctions if not already present
+            if end not in junctions_dict:
+                junctions_dict[end] = len(junctions)
+                junctions.append({
+                    "ID": len(junctions),
+                    "coordinate": list(end)
+                })
+
+            # Direction vector from start to end
+            direction = tuple(e - s for s, e in zip(start, end))
+
+            # Append line
+            lines.append({
+                "ID": len(lines),
+                "point": start,
+                "direction": direction
+            })
 
 # --------------------------
 # Extract Planes from Walls and Slabs
@@ -428,7 +627,8 @@ def extract_semantics():
 
 # --------------------------
 # Run Extractions
-extract_junctions_and_lines()
+#extract_junctions_and_lines()
+extract_junctions_and_lines_work()
 extract_planes()
 extract_semantics()
 
@@ -448,10 +648,16 @@ def generate_matrices():
             point = np.array(line["point"])
             normal = np.array(plane["normal"])
             offset = plane["offset"]
+
             # Check if the point already lies on a plane
             #if np.any(planeLineMatrix[:, l_idx] == 1):
             #   continue
-            if np.isclose(np.dot(normal, point) - offset, 0, atol=1e-3): # This might also include more or less lines than in actuality
+
+            normal_magnitude = np.linalg.norm(normal)
+
+            relative_tolerance = 0.01 * normal_magnitude
+
+            if np.isclose(np.dot(normal, point) - offset, 0, atol=1e-5):
                 planeLineMatrix[p_idx, l_idx] = 1
             
     for l_idx, line in enumerate(lines):
