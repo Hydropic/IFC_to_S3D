@@ -6,7 +6,7 @@ import numpy as np
 import sys
 
 # File paths
-ifc_file_path = "/raid/USERDATA/ovrobi4y/SPVLOC/spvloc/2025-03-10_Stand_AA/centerediIFCmm.ifc"
+ifc_file_path = "/raid/USERDATA/ovrobi4y/SPVLOC/spvloc/2025-03-10_Stand_AA/IC6_s3d_IFC2x3_mm.ifc"
 output_json_path = "/raid/USERDATA/ovrobi4y/SPVLOC/spvloc/2025-03-10_Stand_AA/zind/scene_00100/annotation_3d.json"
 junctions = []
 junctions_dict = {}
@@ -170,31 +170,58 @@ def extract_planes():
                 for item in rep.Items:
                     print(item)
                     
-                    def process_faces(faces):
-                        
+                    def process_faces(faces, coords=None):
                         for face in faces:
-                            for bound in face.Bounds:
-                                loop = bound.Bound
-                                if loop.is_a("IfcPolyLoop"):
-                                    global_tf = get_global_transform(placement)
-                                    face_points = [
-                                        (global_tf @ np.append(pt.Coordinates, 1))[:3]
-                                        for pt in loop.Polygon
-                                    ]
-                                    print("##### FACE_POINTS: ",face_points)
-                                    if len(face_points) >= 3:
-                                        normal = _compute_normal(face_points[0], face_points[1], face_points[2])
-                                        print("##### NORMAL: ",normal)
-                                        offset = np.dot(normal, face_points[0])
-                                        print("##### OFFSET: ",offset)
-                                        area = compute_face_area(face_points)
-                                        print("##### AREA: ",area)
-                                        candidate_faces.append({
-                                            "normal": normal,
-                                            "offset": offset,
-                                            "area": area,
-                                            "points": face_points,
-                                        })
+                            # Handle IfcIndexedPolygonalFace (IFC4)
+                            if face.is_a("IfcIndexedPolygonalFace") and coords is not None:
+                                # face.CoordIndex is 1-based
+                                indices = [idx - 1 for idx in face.CoordIndex]
+                                face_points = [coords[i] for i in indices]
+                                global_tf = get_global_transform(placement)
+                                face_points = [
+                                    (global_tf @ np.append(pt, 1))[:3]
+                                    for pt in face_points
+                                ]
+                                print("##### IFCIndexedPolygonalFace FACE_POINTS: ", face_points)
+                                if len(face_points) >= 3:
+                                    normal = _compute_normal(face_points[0], face_points[1], face_points[2])
+                                    print("##### NORMAL: ", normal)
+                                    offset = np.dot(normal, face_points[0])
+                                    print("##### OFFSET: ", offset)
+                                    area = compute_face_area(face_points)
+                                    print("##### AREA: ", area)
+                                    candidate_faces.append({
+                                        "normal": normal,
+                                        "offset": offset,
+                                        "area": area,
+                                        "points": face_points,
+                                    })
+                                continue
+
+                            # Handle faces with Bounds (e.g., IfcFace)
+                            if hasattr(face, "Bounds"):
+                                for bound in face.Bounds:
+                                    loop = bound.Bound
+                                    if loop.is_a("IfcPolyLoop"):
+                                        global_tf = get_global_transform(placement)
+                                        face_points = [
+                                            (global_tf @ np.append(pt.Coordinates, 1))[:3]
+                                            for pt in loop.Polygon
+                                        ]
+                                        print("##### FACE_POINTS: ", face_points)
+                                        if len(face_points) >= 3:
+                                            normal = _compute_normal(face_points[0], face_points[1], face_points[2])
+                                            print("##### NORMAL: ", normal)
+                                            offset = np.dot(normal, face_points[0])
+                                            print("##### OFFSET: ", offset)
+                                            area = compute_face_area(face_points)
+                                            print("##### AREA: ", area)
+                                            candidate_faces.append({
+                                                "normal": normal,
+                                                "offset": offset,
+                                                "area": area,
+                                                "points": face_points,
+                                            })
 
                     if item.is_a("IfcFacetedBrep") and hasattr(item, "Outer"):
                         process_faces(item.Outer.CfsFaces)
@@ -204,9 +231,11 @@ def extract_planes():
 
                     elif item.is_a("IfcIndexedPolyCurve") and hasattr(item, "Faces"):
                         process_faces(item.Faces)
-                    
-                    elif item.is_a("IfcPolygonalFaceSet") and hasattr(item, "Faces"):
-                        process_faces(item.Faces)
+
+                    elif item.is_a("IfcPolygonalFaceSet") and hasattr(item, "Faces"): # For IFC4
+                        # Get the coordinates array (CoordList)
+                        coords = [np.array(coord) for coord in item.Coordinates.CoordList]
+                        process_faces(item.Faces, coords=coords)
 
                     elif item.is_a("IfcMappedItem"):
                         mapped_items = item.MappingSource.MappedRepresentation.Items
