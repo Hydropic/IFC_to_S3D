@@ -117,16 +117,6 @@ def prepare_geometry_from_annos(annos, use_torch=True):
 
         all_hole_annos.append(hole_annos)
 
-    print("################### all_walls: ", all_walls)
-    print("################### all_walls_clipped: ",all_walls_clipped)
-    print("################### all_holes: ", all_holes)
-    print("################### all_hole_annos: ",all_hole_annos)
-    print("LENGTH")
-    print("################### all_walls: ", len(all_walls))
-    print("################### all_walls_clipped: ", len(all_walls_clipped))
-    print("################### all_holes: ", len(all_holes))
-    print("################### all_hole_annos: ",len(all_hole_annos))
-
     for semantic in annos["semantics"]:
         # room and wall are not needed in converted file, column should be handled seperatly
         if semantic["type"] in ["outwall", "door", "window", "wall", "bb", "room", "column"]: # entfernt semantics von der scene generierung
